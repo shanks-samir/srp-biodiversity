@@ -1,8 +1,12 @@
+import sys
 import os
 import argparse
 import numpy as np
 import torch
 from tqdm import tqdm
+
+# Ensure project root is in sys.path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from segment_anything import sam_model_registry
 from datasets.potsdam import TorchGeoPotsdamDataset

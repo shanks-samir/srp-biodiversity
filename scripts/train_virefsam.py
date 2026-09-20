@@ -1,3 +1,4 @@
+import sys
 import os
 import argparse
 import yaml
@@ -7,6 +8,9 @@ import torch.nn.functional as F
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from tqdm import tqdm
+
+# Ensure project root is in sys.path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from segment_anything import sam_model_registry
 from datasets.potsdam import TorchGeoPotsdamDataset
@@ -52,9 +56,18 @@ def main():
     print(f"Using compute device: {device}")
 
     # 1. Load Pretrained SAM
-    print(f"Loading SAM model ({args.model_type}) from {args.sam_checkpoint}...")
     if not os.path.exists(args.sam_checkpoint):
-        print(f"Warning: Checkpoint not found at {args.sam_checkpoint}. Downloading or placing it is required on cluster.")
+        print(f"SAM checkpoint not found at {args.sam_checkpoint}. Downloading standard vit_b weights...")
+        os.makedirs(os.path.dirname(args.sam_checkpoint) or ".", exist_ok=True)
+        try:
+            import urllib.request
+            url = "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth"
+            urllib.request.urlretrieve(url, args.sam_checkpoint)
+            print(f"Downloaded SAM weights to {args.sam_checkpoint}")
+        except Exception as e:
+            print(f"Could not auto-download SAM weights ({e}). Initializing without preloaded weights.")
+
+    print(f"Loading SAM model ({args.model_type}) from {args.sam_checkpoint}...")
     sam = sam_model_registry[args.model_type](checkpoint=args.sam_checkpoint if os.path.exists(args.sam_checkpoint) else None)
     sam.to(device)
 
