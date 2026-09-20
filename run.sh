@@ -23,11 +23,11 @@ source activate srp_env
 
 # 1. Run the leaf-off / NDVI diagnostic
 echo "Running Leaf-Off Condition & NDVI/Shannon distribution check..."
-srun python scripts/analyze_potsdam_ndvi.py
+python scripts/analyze_potsdam_ndvi.py
 
 # 2. Run 5-shot training with ViRefSAM on Potsdam
 echo "Beginning 5-Shot Training on Potsdam with NDVI and Shannon Diversity..."
-srun python scripts/train_virefsam.py \
+python scripts/train_virefsam.py \
     --data_dir ./Potsdam \
     --sam_checkpoint "$CHECKPOINT_PATH" \
     --model_type vit_b \
@@ -40,7 +40,7 @@ srun python scripts/train_virefsam.py \
 
 # 3. Run evaluation on hold-out validation tiles
 echo "Evaluating 5-Shot Performance..."
-srun python scripts/evaluate.py \
+python scripts/evaluate.py \
     --dataset_type potsdam \
     --data_dir ./Potsdam \
     --checkpoint ./outputs/best_virefsam_model.pth \
