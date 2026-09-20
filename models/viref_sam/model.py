@@ -30,7 +30,7 @@ class ViRefSAM(nn.Module):
         """
         super().__init__()
         self.sam = sam_model
-        embed_dim = self.sam.prompt_encoder.embedding_dim
+        embed_dim = self.sam.prompt_encoder.embed_dim
 
         # Freeze SAM parameters if requested
         if freeze_sam:
