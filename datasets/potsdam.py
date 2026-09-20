@@ -74,6 +74,11 @@ class TorchGeoPotsdamDataset(Dataset):
         # When using literature split, load the full training pool and filter
         tg_split = "train" if (use_literature_split and split in ["train", "val"]) else split
 
+        # Safety check: If an empty '4_Ortho_RGBIR' directory exists, remove it so TorchGeo doesn't skip archive extraction
+        img_root_dir = os.path.join(root, "4_Ortho_RGBIR")
+        if os.path.isdir(img_root_dir) and len(os.listdir(img_root_dir)) == 0:
+            os.rmdir(img_root_dir)
+
         # Initialize official torchgeo Potsdam2D dataset
         self.dataset = Potsdam2D(
             root=root,
