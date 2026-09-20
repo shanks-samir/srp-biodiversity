@@ -36,7 +36,7 @@ class FewShotEpisodeSampler:
 
     def _build_class_index(self):
         """Scan dataset to locate samples containing each target class."""
-        print(f"Building class index for {len(self.dataset)} samples across classes {self.classes}...")
+        print(f"Building class index for {len(self.dataset)} samples across classes {self.classes}...", flush=True)
         for idx in range(len(self.dataset)):
             sample = self.dataset[idx]
             mask = sample["mask"]
@@ -52,7 +52,7 @@ class FewShotEpisodeSampler:
                     self.class_to_indices[c].append(idx)
 
         for c in self.classes:
-            print(f"Class {c}: {len(self.class_to_indices[c])} samples available.")
+            print(f"  Class {c}: {len(self.class_to_indices[c])} samples available.", flush=True)
 
     def sample_episode(self, target_class: Optional[int] = None) -> Dict[str, torch.Tensor]:
         """Sample one K-shot evaluation episode.

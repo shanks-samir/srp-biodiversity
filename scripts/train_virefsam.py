@@ -99,7 +99,7 @@ def main():
     train_sampler = FewShotEpisodeSampler(train_dataset, classes=base_classes, k_shot=args.k_shot, q_queries=1)
     val_sampler = FewShotEpisodeSampler(val_dataset, classes=novel_classes, k_shot=args.k_shot, q_queries=1)
 
-    print("Starting few-shot episodic training...")
+    print("Starting few-shot episodic training...", flush=True)
     best_val_iou = 0.0
 
     for episode_idx in range(1, args.num_episodes + 1):
@@ -129,6 +129,10 @@ def main():
         optimizer.step()
         scheduler.step()
 
+        # Print progress for every episode immediately
+        current_lr = scheduler.get_last_lr()[0] if hasattr(scheduler, "get_last_lr") else args.lr
+        print(f"[Episode {episode_idx:04d}/{args.num_episodes}] Target Class: {episode['target_class']} | Loss: {total_loss.item():.4f} (BCE: {bce.item():.4f}, Dice: {dice.item():.4f}) | LR: {current_lr:.2e}", flush=True)
+
         if episode_idx % 20 == 0 or episode_idx == args.num_episodes:
             # Run validation on novel classes
             model.eval()
@@ -153,7 +157,9 @@ def main():
                     val_ious.append(iou)
 
             mean_val_iou = sum(val_ious) / len(val_ious)
-            print(f"Episode {episode_idx}/{args.num_episodes} | Train Loss: {total_loss.item():.4f} | Novel Classes Val mIoU: {mean_val_iou:.4f}")
+            print(f"\n========================================================", flush=True)
+            print(f"--> [EVALUATION @ Episode {episode_idx}/{args.num_episodes}] Novel Classes Val mIoU: {mean_val_iou:.4f}", flush=True)
+            print(f"========================================================\n", flush=True)
 
             if mean_val_iou > best_val_iou:
                 best_val_iou = mean_val_iou
@@ -163,9 +169,9 @@ def main():
                     "model_state_dict": model.state_dict(),
                     "best_val_iou": best_val_iou,
                 }, ckpt_path)
-                print(f"--> Saved new best checkpoint to {ckpt_path} (mIoU: {best_val_iou:.4f})")
+                print(f"--> Saved new best checkpoint to {ckpt_path} (mIoU: {best_val_iou:.4f})\n", flush=True)
 
-    print(f"Training complete! Best Novel Class mIoU: {best_val_iou:.4f}")
+    print(f"Training complete! Best Novel Class mIoU: {best_val_iou:.4f}", flush=True)
 
 
 if __name__ == "__main__":
