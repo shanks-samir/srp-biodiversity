@@ -1,0 +1,25 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Data & Large Archives
+Potsdam/
+*.zip
+*.rar
+*.tgz
+*.tar.gz
+data/
+
+# Model Checkpoints & Logs
+checkpoints/
+outputs/
+logs/
+*.pth
+*.pt
+
+# OS & IDE files
+.DS_Store
+.vscode/
+.idea/
+.venv/
