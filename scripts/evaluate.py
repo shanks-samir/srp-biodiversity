@@ -25,9 +25,12 @@ def main():
     parser.add_argument("--model_type", type=str, default="vit_b")
     parser.add_argument("--k_shot", type=int, default=5, help="1 or 5 shot")
     parser.add_argument("--num_episodes", type=int, default=100, help="Number of evaluation episodes")
-    parser.add_argument("--use_ndvi", action="store_true", default=True)
-    parser.add_argument("--use_shannon", action="store_true", default=True)
+    parser.add_argument("--no_ndvi", action="store_true", help="Disable NDVI channel (Ablation: RGB only)")
+    parser.add_argument("--no_shannon", action="store_true", help="Disable Shannon Diversity (Ablation: RGB + NDVI only)")
     args = parser.parse_args()
+
+    args.use_ndvi = not args.no_ndvi
+    args.use_shannon = not args.no_shannon
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Running evaluation on {device}...")
