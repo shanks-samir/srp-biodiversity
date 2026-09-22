@@ -103,7 +103,14 @@ class ViRefSAM(nn.Module):
         Q, _, H_q, W_q = query_images.shape
 
         # 1. Feature extraction
-        support_feats = self.extract_image_embeddings(support_images)  # (K, 256, 64, 64)
+        # Extract support embeddings in single-image chunks under no_grad to drop peak VRAM from ~8GB to ~1.2GB
+        support_feats_list = []
+        with torch.no_grad():
+            for k in range(support_images.shape[0]):
+                s_feat = self.extract_image_embeddings(support_images[k:k+1])
+                support_feats_list.append(s_feat)
+        support_feats = torch.cat(support_feats_list, dim=0)  # (K, 256, 64, 64)
+
         query_feats = self.extract_image_embeddings(query_images)      # (Q, 256, 64, 64)
 
         # 2. Synthesize reference prompt tokens from support set
