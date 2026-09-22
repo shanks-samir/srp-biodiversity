@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from segment_anything import sam_model_registry
 from datasets.potsdam import TorchGeoPotsdamDataset
+from datasets.potsdam_patched import PotsdamPatchDataset
 from datasets.eu_uav import EUMultispectralUAVDataset
 from datasets.episode_sampler import FewShotEpisodeSampler
 from models.viref_sam.model import ViRefSAM
@@ -19,12 +20,14 @@ from scripts.train_virefsam import compute_iou
 def main():
     parser = argparse.ArgumentParser(description="Evaluate ViRefSAM Few-Shot Model")
     parser.add_argument("--dataset_type", type=str, choices=["potsdam", "eu_uav"], default="potsdam")
-    parser.add_argument("--data_dir", type=str, default="./Potsdam", help="Path to dataset directory (default: ./Potsdam)")
+    parser.add_argument("--data_dir", type=str, default="./Potsdam", help="Path to dataset directory")
+    parser.add_argument("--patch_dir", type=str, default=None, help="Path to pre-cropped 512x512 patches")
     parser.add_argument("--checkpoint", type=str, required=True, help="Trained model checkpoint path")
     parser.add_argument("--sam_checkpoint", type=str, default="./checkpoints/sam_vit_b_01ec64.pth")
     parser.add_argument("--model_type", type=str, default="vit_b")
     parser.add_argument("--k_shot", type=int, default=5, help="1 or 5 shot")
     parser.add_argument("--num_episodes", type=int, default=100, help="Number of evaluation episodes")
+    parser.add_argument("--seed", type=int, default=42, help="RNG seed for evaluation")
     parser.add_argument("--no_ndvi", action="store_true", help="Disable NDVI channel (Ablation: RGB only)")
     parser.add_argument("--no_shannon", action="store_true", help="Disable Shannon Diversity (Ablation: RGB + NDVI only)")
     args = parser.parse_args()
@@ -33,7 +36,7 @@ def main():
     args.use_shannon = not args.no_shannon
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Running evaluation on {device}...")
+    print(f"Running evaluation on {device} (NDVI={args.use_ndvi}, Shannon={args.use_shannon}, Seed={args.seed})...")
 
     # Load SAM and ViRefSAM
     sam = sam_model_registry[args.model_type](checkpoint=args.sam_checkpoint if os.path.exists(args.sam_checkpoint) else None)
@@ -48,10 +51,10 @@ def main():
 
     # Load trained weights
     if os.path.exists(args.checkpoint):
-        ckpt = torch.load(args.checkpoint, map_location=device)
+        ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
         state_dict = ckpt["model_state_dict"] if "model_state_dict" in ckpt else ckpt
         model.load_state_dict(state_dict, strict=False)
-        print(f"Loaded weights from {args.checkpoint}")
+        print(f"Loaded weights from {args.checkpoint} (Episode: {ckpt.get('episode', 'N/A')})")
     else:
         print(f"Warning: Checkpoint not found at {args.checkpoint}. Running with initialized adapter.")
 
@@ -60,20 +63,28 @@ def main():
     # Setup dataset
     if args.dataset_type == "potsdam":
         target_classes = [3, 4]  # TorchGeo: 3=Low vegetation, 4=Tree
-        dataset = TorchGeoPotsdamDataset(
-            root=args.data_dir,
-            split="val",
-            crop_size=512,
-            compute_shannon=args.use_shannon,
-            use_literature_split=True
-        )
         class_names = {3: "Low Vegetation", 4: "Tree"}
+
+        auto_patch_dir = args.patch_dir or os.path.join(args.data_dir, "patches_512")
+        if os.path.isdir(os.path.join(auto_patch_dir, "val")):
+            print(f"Using pre-cropped native 512x512 validation patches from {auto_patch_dir}/val")
+            dataset = PotsdamPatchDataset(patch_dir=os.path.join(auto_patch_dir, "val"))
+        else:
+            print(f"Using standard TorchGeo Potsdam hold-out validation split.")
+            dataset = TorchGeoPotsdamDataset(
+                root=args.data_dir,
+                split="val",
+                crop_size=512,
+                compute_shannon=args.use_shannon,
+                use_literature_split=True
+            )
     else:
         target_classes = [1]     # Habitat foreground class in UAV dataset
         dataset = EUMultispectralUAVDataset(data_dir=args.data_dir, patch_size=512, compute_shannon=args.use_shannon)
         class_names = {1: "Target Habitat"}
 
-    sampler = FewShotEpisodeSampler(dataset, classes=target_classes, k_shot=args.k_shot, q_queries=1)
+    sampler = FewShotEpisodeSampler(dataset, classes=target_classes, k_shot=args.k_shot, q_queries=1, seed=args.seed)
+    sampler.reset_rng(seed=args.seed)
 
     class_scores = {c: [] for c in target_classes}
 
@@ -81,6 +92,7 @@ def main():
     with torch.no_grad():
         for _ in tqdm(range(args.num_episodes)):
             for c in target_classes:
+                is_veg = c in [3, 4]
                 episode = sampler.sample_episode(target_class=c)
                 s_imgs = episode["support_images"].to(device)
                 s_masks = episode["support_masks"].to(device)
@@ -93,23 +105,24 @@ def main():
 
                 pred_logits = model.forward_few_shot(
                     s_imgs, s_masks, q_imgs,
-                    s_ndvi, q_ndvi, s_shn, q_shn
+                    s_ndvi, q_ndvi, s_shn, q_shn,
+                    is_vegetation_class=is_veg
                 )
 
                 iou = compute_iou(pred_logits, q_masks)
                 class_scores[c].append(iou)
 
-    print("\n================ Results ================")
+    print("\n================ Evaluation Results ================")
     overall_ious = []
     for c in target_classes:
         mean_c_iou = np.mean(class_scores[c])
         overall_ious.append(mean_c_iou)
-        print(f"Class: {class_names.get(c, str(c))} | {args.k_shot}-shot mIoU: {mean_c_iou:.4f}")
+        print(f"Class: {class_names.get(c, str(c)):<18} | {args.k_shot}-shot mIoU: {mean_c_iou:.4f} (std: {np.std(class_scores[c]):.4f})")
 
     total_mIoU = np.mean(overall_ious)
-    print(f"-----------------------------------------")
+    print(f"----------------------------------------------------")
     print(f"Overall Novel Class Mean IoU ({args.k_shot}-shot): {total_mIoU:.4f}")
-    print("=========================================\n")
+    print("====================================================\n")
 
 
 if __name__ == "__main__":

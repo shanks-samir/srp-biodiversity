@@ -34,8 +34,20 @@ class FewShotEpisodeSampler:
         self.class_to_indices: Dict[int, List[int]] = {c: [] for c in classes}
         self._build_class_index()
 
+    def reset_rng(self, seed: int = 42):
+        """Reset RNG state for deterministic, reproducible validation rounds."""
+        self.rng = random.Random(seed)
+
     def _build_class_index(self):
         """Scan dataset to locate samples containing each target class."""
+        # Fast path: If dataset already has precomputed class indices (e.g. PotsdamPatchDataset)
+        if hasattr(self.dataset, "class_to_indices") and self.dataset.class_to_indices:
+            print(f"Using precomputed class index for classes {self.classes}...", flush=True)
+            for c in self.classes:
+                self.class_to_indices[c] = self.dataset.class_to_indices.get(c, [])
+                print(f"  Class {c}: {len(self.class_to_indices[c])} samples available.", flush=True)
+            return
+
         print(f"Building class index for {len(self.dataset)} samples across classes {self.classes}...", flush=True)
         for idx in range(len(self.dataset)):
             sample = self.dataset[idx]
@@ -81,12 +93,16 @@ class FewShotEpisodeSampler:
 
         if len(pool) >= total_needed:
             sampled_indices = self.rng.sample(pool, total_needed)
+            support_idxs = sampled_indices[:self.k_shot]
+            query_idxs = sampled_indices[self.k_shot:]
+        elif len(pool) > self.q_queries:
+            # Prevent support-query overlap leakage when pool is small
+            query_idxs = self.rng.sample(pool, self.q_queries)
+            remaining_pool = [idx for idx in pool if idx not in query_idxs]
+            support_idxs = self.rng.choices(remaining_pool, k=self.k_shot)
         else:
-            # Sample with replacement if dataset is very small
-            sampled_indices = self.rng.choices(pool, k=total_needed)
-
-        support_idxs = sampled_indices[:self.k_shot]
-        query_idxs = sampled_indices[self.k_shot:]
+            query_idxs = pool[:self.q_queries]
+            support_idxs = self.rng.choices(pool, k=self.k_shot)
 
         # Fetch and format support set
         support_imgs, support_masks, support_ndvis, support_shannons = [], [], [], []

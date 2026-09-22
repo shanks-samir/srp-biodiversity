@@ -26,16 +26,19 @@ class EcologicalAdapter(nn.Module):
         self.use_shannon = use_shannon
 
         extra_channels = int(use_ndvi) + int(use_shannon)
+        self.extra_channels = extra_channels
         self.has_extra = extra_channels > 0
 
         if self.has_extra:
             # Convolutional stem to project ecological maps into bottleneck space
+            # Using GroupNorm instead of BatchNorm2d for stability with batch size 1
+            num_groups = min(8, bottleneck_dim)
             self.eco_stem = nn.Sequential(
                 nn.Conv2d(extra_channels, bottleneck_dim, kernel_size=3, padding=1),
-                nn.BatchNorm2d(bottleneck_dim),
+                nn.GroupNorm(num_groups=num_groups, num_channels=bottleneck_dim),
                 nn.GELU(),
                 nn.Conv2d(bottleneck_dim, bottleneck_dim, kernel_size=3, padding=1),
-                nn.BatchNorm2d(bottleneck_dim),
+                nn.GroupNorm(num_groups=num_groups, num_channels=bottleneck_dim),
                 nn.GELU()
             )
         else:
@@ -75,11 +78,18 @@ class EcologicalAdapter(nn.Module):
         # Inject ecological priors if available
         if self.has_extra and (query_ndvi is not None or query_shannon is not None):
             eco_inputs = []
-            if self.use_ndvi and query_ndvi is not None:
-                ndvi_down = F.interpolate(query_ndvi, size=(H, W), mode="bilinear", align_corners=False)
+            if self.use_ndvi:
+                if query_ndvi is not None:
+                    ndvi_down = F.interpolate(query_ndvi, size=(H, W), mode="bilinear", align_corners=False)
+                else:
+                    ndvi_down = torch.zeros((B, 1, H, W), device=query_embeddings.device, dtype=query_embeddings.dtype)
                 eco_inputs.append(ndvi_down)
-            if self.use_shannon and query_shannon is not None:
-                shannon_down = F.interpolate(query_shannon, size=(H, W), mode="bilinear", align_corners=False)
+
+            if self.use_shannon:
+                if query_shannon is not None:
+                    shannon_down = F.interpolate(query_shannon, size=(H, W), mode="bilinear", align_corners=False)
+                else:
+                    shannon_down = torch.zeros((B, 1, H, W), device=query_embeddings.device, dtype=query_embeddings.dtype)
                 eco_inputs.append(shannon_down)
 
             if len(eco_inputs) > 0:

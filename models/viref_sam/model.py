@@ -77,7 +77,8 @@ class ViRefSAM(nn.Module):
         support_ndvi: Optional[torch.Tensor] = None,
         query_ndvi: Optional[torch.Tensor] = None,
         support_shannon: Optional[torch.Tensor] = None,
-        query_shannon: Optional[torch.Tensor] = None
+        query_shannon: Optional[torch.Tensor] = None,
+        is_vegetation_class: bool = True
     ) -> torch.Tensor:
         """
         Execute full few-shot segmentation pipeline:
@@ -94,6 +95,7 @@ class ViRefSAM(nn.Module):
             query_ndvi: (Q, 1, H, W)
             support_shannon: (K, 1, H, W)
             query_shannon: (Q, 1, H, W)
+            is_vegetation_class: Whether target class is vegetation (controls NDVI weighting)
             
         Returns:
             predicted_masks: (Q, 1, H, W) logit map for query segmentation
@@ -106,7 +108,7 @@ class ViRefSAM(nn.Module):
 
         # 2. Synthesize reference prompt tokens from support set
         context_tokens = self.context_prompt_encoder(
-            support_feats, support_masks, support_ndvi
+            support_feats, support_masks, support_ndvi, is_vegetation_class=is_vegetation_class
         )  # (1, num_tokens, 256)
         # Expand tokens for all queries in batch
         prompt_tokens = context_tokens.expand(Q, -1, -1)  # (Q, num_tokens, 256)
