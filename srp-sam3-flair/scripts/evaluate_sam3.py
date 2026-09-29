@@ -50,13 +50,14 @@ def compute_iou(pred_bin: np.ndarray, gt_bin: np.ndarray) -> Tuple[float, float,
 
 
 class SAM3Wrapper:
-    """Unified wrapper supporting native sam3, HuggingFace transformers, or mock inference."""
+    """Unified wrapper supporting native sam3, HuggingFace transformers, segment_anything (SAM 1), or mock inference."""
 
     def __init__(self, backend: str = "auto", device: str = "cuda", checkpoint: Optional[str] = None):
         self.device = device if torch.cuda.is_available() and device == "cuda" else "cpu"
         self.backend = backend
         self.model = None
         self.processor = None
+        self.predictor = None
 
         if self.backend in ("auto", "native"):
             try:
@@ -87,7 +88,39 @@ class SAM3Wrapper:
                 if self.backend == "hf":
                     raise RuntimeError(f"Failed to load HuggingFace transformers sam3 backend: {e}")
 
-        print("Notice: Neither native sam3 nor HuggingFace SAM 3 is available in this environment.")
+        if self.backend in ("auto", "sam", "sam1", "segment_anything"):
+            try:
+                from segment_anything import sam_model_registry, SamPredictor
+                candidate_paths = [checkpoint] if checkpoint else []
+                candidate_paths.extend([
+                    "../checkpoints/sam_vit_b_01ec64.pth",
+                    "checkpoints/sam_vit_b_01ec64.pth",
+                    "/media/homes/shrestha/SRP/checkpoints/sam_vit_b_01ec64.pth",
+                    os.path.expanduser("~/SRP/checkpoints/sam_vit_b_01ec64.pth"),
+                    "../models/sam_vit_b_01ec64.pth",
+                    "models/sam_vit_b_01ec64.pth",
+                ])
+                resolved_ckpt = None
+                for p in candidate_paths:
+                    if p and os.path.exists(p):
+                        resolved_ckpt = p
+                        break
+
+                if resolved_ckpt:
+                    print(f"Loading SAM (ViT-B) from {resolved_ckpt} on {self.device}...")
+                    sam = sam_model_registry["vit_b"](checkpoint=resolved_ckpt)
+                    sam.to(self.device).eval()
+                    self.predictor = SamPredictor(sam)
+                    self.backend = "sam"
+                    print("Successfully loaded SAM (segment-anything) foundation model.")
+                    return
+                elif self.backend in ("sam", "sam1", "segment_anything"):
+                    raise FileNotFoundError(f"SAM checkpoint not found in candidate paths: {candidate_paths}")
+            except Exception as e:
+                if self.backend in ("sam", "sam1", "segment_anything"):
+                    raise RuntimeError(f"Failed to load segment_anything backend: {e}")
+
+        print("Notice: Neither native sam3 nor HuggingFace SAM 3 nor SAM checkpoint is available in this environment.")
         print("Falling back to mock inference mode (for pipeline verification without GPU weights).")
         self.backend = "mock"
 
@@ -98,7 +131,7 @@ class SAM3Wrapper:
         layout,
         orig_size: Tuple[int, int] = (512, 512),
     ) -> np.ndarray:
-        """Run SAM 3 on the canvas with the support box prompt, returning query binary mask."""
+        """Run SAM on the canvas with the support box prompt, returning query binary mask."""
         if self.backend == "mock":
             # Deterministic mock prediction: returns a synthetic region around target location
             x, y, w, h = support_box_xywh
@@ -136,11 +169,25 @@ class SAM3Wrapper:
                 pred_bin = pred_masks > 0.0
             return extract_query_mask(pred_bin, layout, out_size=orig_size)
 
+        if self.backend == "sam":
+            xyxy_box = box_to_canvas_xyxy(support_box_xywh, layout.support, orig_size, CANVAS_SIZE)
+            canvas_uint8 = (canvas * 255.0).clip(0, 255).astype(np.uint8) if canvas.max() <= 1.0 else canvas.astype(np.uint8)
+            with torch.no_grad():
+                self.predictor.set_image(canvas_uint8)
+                box_np = np.array(xyxy_box)
+                masks, scores, _ = self.predictor.predict(
+                    box=box_np,
+                    multimask_output=True,
+                )
+                best_idx = int(np.argmax(scores))
+                pred_bin = masks[best_idx]
+            return extract_query_mask(pred_bin, layout, out_size=orig_size)
+
         raise ValueError(f"Unknown backend: {self.backend}")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Evaluate SAM 3 on FLAIR with ecological composites")
+    parser = argparse.ArgumentParser(description="Evaluate SAM / SAM 3 on FLAIR with ecological composites")
     parser.add_argument("--root", type=str, default="./data", help="FLAIR dataset root directory")
     parser.add_argument("--class_index", type=str, default=None, help="Path to precomputed class index JSON")
     parser.add_argument("--composite", type=str, default="cir", choices=["rgb", "cir", "ndvi_dsm_h", "rgb_ndvi", "rgb_dsm"], help="Input composite")
@@ -150,7 +197,8 @@ def main():
     parser.add_argument("--holdout_domains", type=str, nargs="*", default=None, help="Optional domain IDs to hold out for evaluation")
     parser.add_argument("--fold", type=int, default=None, choices=[0, 1, 2, 3], help="Optional PASCAL-style fold index")
     parser.add_argument("--num_episodes", type=int, default=30, help="Episodes per class")
-    parser.add_argument("--model_backend", type=str, default="auto", choices=["auto", "native", "hf", "mock"], help="Model backend")
+    parser.add_argument("--model_backend", type=str, default="auto", choices=["auto", "native", "hf", "sam", "sam1", "segment_anything", "mock"], help="Model backend")
+    parser.add_argument("--sam_checkpoint", type=str, default=None, help="Path to SAM checkpoint (e.g. sam_vit_b_01ec64.pth)")
     parser.add_argument("--sam3_checkpoint", type=str, default=None, help="Path to local SAM 3 checkpoint or HF model id")
     parser.add_argument("--output_dir", type=str, default="./outputs", help="Output directory for results")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
@@ -161,7 +209,7 @@ def main():
     random.seed(args.seed)
 
     print(f"\n========================================================")
-    print(f"SAM 3 Few-Shot FLAIR Evaluation")
+    print(f"Few-Shot FLAIR Evaluation (Foundation Model Spatial Canvas)")
     print(f"  Composite     : {args.composite}")
     print(f"  Shannon source: {args.shannon_source}")
     print(f"  K-shot        : {args.k_shot}")
@@ -176,7 +224,17 @@ def main():
         shannon_source=args.shannon_source,
         class_index_file=args.class_index,
     )
-    print(f"Loaded FLAIR dataset with {len(dataset)} total patches across {len(dataset.domains)} domains.")
+    print(f"Loaded FLAIR dataset with {len(dataset)} total patches across {len(set(dataset.domains))} domains.")
+
+    # Auto-load or build class index if not provided
+    if not dataset.class_to_indices:
+        default_index = os.path.join(args.output_dir, "flair_class_index.json")
+        if os.path.exists(default_index):
+            print(f"Loading cached class index from {default_index}...")
+            dataset._load_class_index(default_index)
+        else:
+            print("Class index not found. Indexing patches by class (runs once and caches to disk)...")
+            dataset.build_class_index(save_to=default_index)
 
     # Determine evaluation classes
     if args.fold is not None:

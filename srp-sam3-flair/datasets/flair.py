@@ -262,6 +262,7 @@ class FLAIRDataset(Dataset):
             c: [by_path[p] for p in paths] for c, paths in index.items() if paths
         }
         if save_to:
+            os.makedirs(os.path.dirname(os.path.abspath(save_to)), exist_ok=True)
             with open(save_to, "w") as handle:
                 json.dump({str(c): p for c, p in index.items() if p}, handle, indent=2)
             print(f"Saved class index to {save_to}")
