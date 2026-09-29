@@ -22,7 +22,7 @@ import torch
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from datasets.flair import (  # noqa: E402
-    FLAIRDataset, FLAIR_CLASSES, GSD_METRES, _read_tif, BLUE, GREEN, RED, NIR, ELEV,
+    FLAIRDataset, FLAIR_CLASSES, VEGETATION_CLASSES, GSD_METRES, _read_tif, BLUE, GREEN, RED, NIR, ELEV,
 )
 
 
@@ -30,18 +30,20 @@ def check_channel_order(dataset: FLAIRDataset, num_samples: int = 20) -> None:
     """Test the band-order assumption using physics rather than documentation.
 
     Vegetated pixels reflect strongly in near-infrared and absorb in red, so whichever
-    band is genuinely NIR should have a markedly higher mean than the visible bands over
-    any scene with plant cover. If band 3 is not the brightest on vegetated patches, the
-    assumed order is wrong and every NDVI in this project is meaningless.
+    band is genuinely NIR should have a markedly higher mean than visible bands over
+    vegetation pixels.
     """
     print("\n=== Channel order check ===")
     print("Assumption: 0=Blue, 1=Green, 2=Red, 3=NIR, 4=Elevation(nDSM, metres)\n")
 
     means = np.zeros(5, dtype=np.float64)
+    veg_means = np.zeros(4, dtype=np.float64)
+    veg_pixels = 0
     n = min(num_samples, len(dataset))
     elev_all = []
 
     for i in range(n):
+        sample = dataset[i]
         img_path, _ = dataset.samples[i]
         raw = _read_tif(img_path).astype(np.float32)
         optical = raw[:4]
@@ -50,18 +52,37 @@ def check_channel_order(dataset: FLAIRDataset, num_samples: int = 20) -> None:
         means += np.array([optical[c].mean() for c in range(4)] + [0.0])
         elev_all.append(raw[ELEV])
 
+        # Vegetation pixel check
+        mask = sample["mask"].numpy()
+        veg_mask = np.isin(mask, VEGETATION_CLASSES)
+        if np.any(veg_mask):
+            for c in range(4):
+                veg_means[c] += optical[c][veg_mask].sum()
+            veg_pixels += veg_mask.sum()
+
     means[:4] /= n
     names = ["ch0 (assumed Blue)", "ch1 (assumed Green)", "ch2 (assumed Red)", "ch3 (assumed NIR)"]
+    print("  Overall scene averages:")
     for name, value in zip(names, means[:4]):
-        print(f"  {name:26} mean = {value:.4f}")
+        print(f"    {name:26} mean = {value:.4f}")
 
-    nir_idx = int(np.argmax(means[:4]))
-    if nir_idx == NIR:
-        print("\n  PASS: channel 3 is the brightest, consistent with it being NIR.")
+    if veg_pixels > 0:
+        veg_means /= veg_pixels
+        print("\n  Vegetation-only averages (chlorophyll absorbs red, reflects NIR):")
+        for name, value in zip(names, veg_means):
+            print(f"    {name:26} mean = {value:.4f}")
+
+        nir_idx = int(np.argmax(veg_means))
+        if nir_idx == NIR:
+            print("\n  PASS: channel 3 is the brightest on vegetation pixels, confirming NIR band order.")
+        else:
+            print(f"\n  *** FAIL: channel {nir_idx} is brightest on vegetation pixels, not channel 3. ***")
     else:
-        print(f"\n  *** FAIL: channel {nir_idx} is brightest, not channel 3. ***")
-        print("  The assumed band order is probably wrong. Do NOT trust any NDVI until this")
-        print("  is resolved -- check the release notes for the FLAIR variant you downloaded.")
+        nir_idx = int(np.argmax(means[:4]))
+        if nir_idx == NIR:
+            print("\n  PASS: channel 3 is the brightest, consistent with it being NIR.")
+        else:
+            print(f"\n  *** WARNING: channel {nir_idx} is brightest in unmasked scene. ***")
 
     elev = np.concatenate([e.ravel() for e in elev_all])
     print(f"\n  ch4 (assumed Elevation): min={elev.min():.2f}  max={elev.max():.2f}  "
