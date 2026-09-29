@@ -9,6 +9,7 @@ Potsdam/
 *.rar
 *.tgz
 *.tar.gz
+*.tar
 data/
 
 # Model Checkpoints & Logs
