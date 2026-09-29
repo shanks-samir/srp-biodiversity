@@ -263,6 +263,7 @@ class SAM3Wrapper:
                             best_sim = sim_val
                             best_idx = idx
 
+                self.last_sim_map = sim_map.detach().cpu().numpy()
                 pred_bin = masks[best_idx].astype(np.uint8)
                 return pred_bin
 

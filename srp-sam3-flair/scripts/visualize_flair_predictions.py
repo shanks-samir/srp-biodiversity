@@ -246,8 +246,10 @@ def main():
                     mod_img = q_sample["ndvi"].numpy() if "ndvi" in q_sample else q_img
                     mod_name = "NDVI Chlorophyll"
 
-                # Compute similarity map for visualization
-                if model.backend == "sam":
+                # Retrieve similarity map for visualization
+                if hasattr(model, "last_sim_map") and model.last_sim_map is not None:
+                    sim_map = model.last_sim_map
+                elif model.backend == "sam":
                     # Get the similarity map directly from predictor
                     s_hwc = (np.transpose(s_img, (1, 2, 0)) * 255.0).clip(0, 255).astype(np.uint8)
                     q_hwc = (np.transpose(q_img, (1, 2, 0)) * 255.0).clip(0, 255).astype(np.uint8)
