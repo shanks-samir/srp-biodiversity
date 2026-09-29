@@ -1,0 +1,18 @@
+__pycache__/
+*.py[cod]
+.DS_Store
+.venv/
+venv/
+
+# Data and weights are large and licensed separately -- never commit them.
+data/
+checkpoints/
+*.tif
+*.pth
+*.pt
+*.zip
+
+# Run artefacts
+outputs/
+logs/
+*.log
