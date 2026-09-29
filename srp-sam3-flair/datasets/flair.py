@@ -109,10 +109,14 @@ def _read_tif(path: str) -> np.ndarray:
 def mask_path_for(img_path: str) -> Optional[str]:
     """Derive the MSK path for an IMG path by substituting in both dir and filename."""
     directory, filename = os.path.split(img_path)
+    msk_name = filename.replace("IMG", "MSK", 1)
     candidates = [
-        os.path.join(directory, filename.replace("IMG", "MSK", 1)),
-        os.path.join(directory.replace("/img", "/msk"), filename.replace("IMG", "MSK", 1)),
-        os.path.join(directory.replace("/IMG", "/MSK"), filename.replace("IMG", "MSK", 1)),
+        os.path.join(directory, msk_name),
+        os.path.join(directory.replace("/img", "/msk"), msk_name),
+        os.path.join(directory.replace("/IMG", "/MSK"), msk_name),
+        os.path.join(directory.replace("/aerial", "/labels"), msk_name),
+        os.path.join(directory.replace("/AERIAL", "/LABELS"), msk_name),
+        os.path.join(re.sub(r'(^|/|\\)aerial($|/|\\)', r'\1labels\2', directory), msk_name),
     ]
     for candidate in candidates:
         if os.path.exists(candidate):
