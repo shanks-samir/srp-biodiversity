@@ -126,17 +126,19 @@ class SAM3Wrapper:
 
     def predict(
         self,
-        canvas: np.ndarray,
-        support_box_xywh: Tuple[int, int, int, int],
-        layout,
+        canvas: Optional[np.ndarray] = None,
+        support_box_xywh: Optional[Tuple[int, int, int, int]] = None,
+        layout=None,
         orig_size: Tuple[int, int] = (512, 512),
+        support_image: Optional[np.ndarray] = None,
+        query_image: Optional[np.ndarray] = None,
+        support_mask: Optional[np.ndarray] = None,
     ) -> np.ndarray:
-        """Run SAM on the canvas with the support box prompt, returning query binary mask."""
+        """Run few-shot prediction on query using exemplar guidance."""
         if self.backend == "mock":
             # Deterministic mock prediction: returns a synthetic region around target location
-            x, y, w, h = support_box_xywh
+            x, y, w, h = support_box_xywh if support_box_xywh else (50, 50, 50, 50)
             mock_mask = np.zeros(orig_size, dtype=np.uint8)
-            # Center of support box mapped to query
             mock_mask[max(0, y):min(orig_size[0], y + h), max(0, x):min(orig_size[1], x + w)] = 1
             return mock_mask
 
@@ -170,18 +172,99 @@ class SAM3Wrapper:
             return extract_query_mask(pred_bin, layout, out_size=orig_size)
 
         if self.backend == "sam":
-            xyxy_box = box_to_canvas_xyxy(support_box_xywh, layout.support, orig_size, CANVAS_SIZE)
-            canvas_uint8 = (canvas * 255.0).clip(0, 255).astype(np.uint8) if canvas.max() <= 1.0 else canvas.astype(np.uint8)
+            import torch.nn.functional as F
+
+            def to_hwc_uint8(img):
+                if isinstance(img, torch.Tensor):
+                    img = img.detach().cpu().numpy()
+                if img.ndim == 3 and img.shape[0] in (1, 3):
+                    img = np.transpose(img, (1, 2, 0))
+                if img.shape[-1] == 1:
+                    img = np.repeat(img, 3, axis=-1)
+                if img.max() <= 1.0:
+                    img = (img * 255.0).clip(0, 255).astype(np.uint8)
+                return img.astype(np.uint8)
+
+            assert support_image is not None and query_image is not None, \
+                "SAM backend requires support_image and query_image for exemplar feature matching."
+
+            s_hwc = to_hwc_uint8(support_image)
+            q_hwc = to_hwc_uint8(query_image)
+            H, W = q_hwc.shape[:2]
+
             with torch.no_grad():
-                self.predictor.set_image(canvas_uint8)
-                box_np = np.array(xyxy_box)
+                # 1. Encode support image with frozen SAM backbone
+                self.predictor.set_image(s_hwc)
+                feat_s = self.predictor.get_image_embedding()  # (1, 256, 64, 64)
+
+                # 2. Extract exemplar prototype from target region
+                if support_mask is not None:
+                    mask_s = torch.from_numpy(support_mask).float().to(self.device)[None, None, ...]
+                else:
+                    x, y, w, h = support_box_xywh
+                    mask_s = torch.zeros((1, 1, s_hwc.shape[0], s_hwc.shape[1]), device=self.device)
+                    mask_s[0, 0, max(0, y):min(s_hwc.shape[0], y+h), max(0, x):min(s_hwc.shape[1], x+w)] = 1.0
+
+                mask_s_down = F.interpolate(mask_s, size=feat_s.shape[-2:], mode="nearest")
+                if mask_s_down.sum() == 0:
+                    mask_s_down = torch.ones_like(feat_s[:, :1, :, :])
+
+                target_feat = (feat_s * mask_s_down).sum(dim=(2, 3)) / (mask_s_down.sum() + 1e-6)
+                target_embed = F.normalize(target_feat, p=2, dim=-1)  # (1, 256)
+
+                # 3. Encode query image with frozen SAM backbone
+                self.predictor.set_image(q_hwc)
+                feat_q = self.predictor.get_image_embedding()  # (1, 256, 64, 64)
+                feat_q_norm = F.normalize(feat_q, p=2, dim=1)  # (1, 256, 64, 64)
+
+                # 4. Compute cosine similarity map
+                sim = torch.einsum("bc,bchw->bhw", target_embed, feat_q_norm)
+                sim_map = F.interpolate(sim.unsqueeze(1), size=(H, W), mode="bilinear", align_corners=False).squeeze()
+
+                # 5. Extract peak positive and negative prompt points
+                max_val, max_idx = torch.max(sim_map.view(-1), dim=0)
+                y_pos = int(max_idx.item() // W)
+                x_pos = int(max_idx.item() % W)
+
+                min_val, min_idx = torch.min(sim_map.view(-1), dim=0)
+                y_neg = int(min_idx.item() // W)
+                x_neg = int(min_idx.item() % W)
+
+                point_coords = np.array([[x_pos, y_pos], [x_neg, y_neg]], dtype=np.float32)
+                point_labels = np.array([1, 0], dtype=np.int32)
+
+                # Box prompt around high-similarity region
+                thresh = max(0.2, 0.7 * max_val.item())
+                high_sim = (sim_map >= thresh).cpu().numpy()
+                box_prompt = None
+                if high_sim.sum() > 20:
+                    ys, xs = np.where(high_sim)
+                    box_prompt = np.array([int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())])
+
+                # 6. Predict candidate masks with SAM decoder
                 masks, scores, _ = self.predictor.predict(
-                    box=box_np,
+                    point_coords=point_coords,
+                    point_labels=point_labels,
+                    box=box_prompt,
                     multimask_output=True,
                 )
+
+                # 7. Select best candidate mask by feature similarity against prototype
+                best_sim = -float("inf")
                 best_idx = int(np.argmax(scores))
-                pred_bin = masks[best_idx]
-            return extract_query_mask(pred_bin, layout, out_size=orig_size)
+                for idx, mask_cand in enumerate(masks):
+                    cand_t = torch.from_numpy(mask_cand).float().to(self.device)[None, None, ...]
+                    cand_down = F.interpolate(cand_t, size=feat_q.shape[-2:], mode="nearest")
+                    if cand_down.sum() > 0:
+                        cand_feat = (feat_q * cand_down).sum(dim=(2, 3)) / (cand_down.sum() + 1e-6)
+                        cand_embed = F.normalize(cand_feat, p=2, dim=-1)
+                        sim_val = torch.sum(cand_embed * target_embed).item()
+                        if sim_val > best_sim:
+                            best_sim = sim_val
+                            best_idx = idx
+
+                pred_bin = masks[best_idx].astype(np.uint8)
+                return pred_bin
 
         raise ValueError(f"Unknown backend: {self.backend}")
 
@@ -328,6 +411,9 @@ def main():
                 support_box_xywh=box.box_xywh,
                 layout=layout,
                 orig_size=orig_size,
+                support_image=s_sample["image"].numpy(),
+                query_image=q_sample["image"].numpy(),
+                support_mask=s_mask_c,
             )
 
             # Compute IoU
